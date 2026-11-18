@@ -1,6 +1,10 @@
 import { CharacteristicValue, Logger } from 'homebridge';
 import axios from 'axios';
 
+const REQUEST_TIMEOUT_MS = 5000;
+const UNREACHABLE_AFTER_MS = 30000;
+const UNREACHABLE_POLLING_RATE_MS = 60000;
+
 export interface KeyLight {
   hostname: string;
   port: number;
@@ -59,22 +63,25 @@ export class KeyLightInstance {
 
   private readonly log: Logger;
   private readonly pollingRate: number;
+  private lastResponseTime = 0;
+  private _reachable = true;
 
   private _onPropertyChanged: (arg1: ('brightness' | 'on' | 'temperature'), arg2: number) => void = () => true;
 
   // Creates a new instance of a key light and pulls all neccessary data from the light
   public static async createInstance(data: KeyLight, log: Logger, pollingRate?: number): Promise<KeyLightInstance> {
-    const result = new KeyLightInstance(data, log, pollingRate ?? 1000);
-    try {
-      result.info = (await axios.get<KeyLightInfo>(result.infoEndpoint)).data;
-      result.options = (await axios.get<KeyLightOptions>(result.lightsEndpoint)).data;
-      result.settings = (await axios.get<KeyLightSettings>(result.settingsEndpoint)).data;
-    } catch (error) {
-      return Promise.reject();
-    }
+    const result = new KeyLightInstance(data, log, pollingRate ?? 10000);
+    result.info = (await axios.get<KeyLightInfo>(result.infoEndpoint, { timeout: REQUEST_TIMEOUT_MS })).data;
+    result.options = (await axios.get<KeyLightOptions>(result.lightsEndpoint, { timeout: REQUEST_TIMEOUT_MS })).data;
+    result.settings = (await axios.get<KeyLightSettings>(result.settingsEndpoint, { timeout: REQUEST_TIMEOUT_MS })).data;
 
+    result.recordResponse();
     result.pollOptions();
     return result;
+  }
+
+  public get reachable(): boolean {
+    return this._reachable;
   }
 
   public get serialNumber(): string {
@@ -145,24 +152,42 @@ export class KeyLightInstance {
   }
 
   public identify() {
-    axios.post<unknown>(this.identifyEndpoint);
+    axios.post<unknown>(this.identifyEndpoint)
+      .catch((reason) => {
+        this.log.error('Identifying', this.displayName, 'failed');
+        this.log.debug('Reason:', String(reason));
+      });
   }
 
   public async setProperty(property: ('brightness' | 'on' | 'temperature'), value: CharacteristicValue) {
-    return axios.put<unknown>(this.lightsEndpoint, { 'lights': [{ [property]: value }] });
+    await axios.put<unknown>(this.lightsEndpoint, { 'lights': [{ [property]: value }] }, { timeout: REQUEST_TIMEOUT_MS });
+    if (this.options) {
+      this.options.lights[0][property] = value as number;
+    }
+    this.recordResponse();
   }
 
   public getProperty(property: ('brightness' | 'on' | 'temperature')) {
     return this.options?.lights[0][property] ?? 0;
   }
 
+  private recordResponse() {
+    this.lastResponseTime = Date.now();
+    if (!this._reachable) {
+      this._reachable = true;
+      this.log.info(this.displayName, 'is reachable again');
+    }
+  }
+
   /**
    * The current state of the light is polled regularly. When a change is detected, the onPropertyChanged callback function
    * is called to update HomeKit.
+   * Polls never overlap and slow down while the light is unreachable, as lights can stop responding entirely when flooded with requests.
    */
   private pollOptions() {
-    setInterval(() => {
-      axios.get<KeyLightOptions>(this.lightsEndpoint, { timeout: this.pollingRate ?? 1000 })
+    const delay = this.reachable ? this.pollingRate : Math.max(this.pollingRate, UNREACHABLE_POLLING_RATE_MS);
+    setTimeout(() => {
+      axios.get<KeyLightOptions>(this.lightsEndpoint, { timeout: REQUEST_TIMEOUT_MS })
         .then(response => {
           if (this.options) {
             const oldLight = this.options.lights[0];
@@ -179,11 +204,17 @@ export class KeyLightInstance {
             }
           }
           this.options = response.data;
+          this.recordResponse();
         })
-        .catch(() => {
+        .catch((reason) => {
           // we'll retry again
-          this.log.debug('Polling of', this.displayName, 'failed');
-        });
-    }, this.pollingRate);
+          this.log.debug('Polling of', this.displayName, 'failed:', String(reason));
+          if (this._reachable && Date.now() - this.lastResponseTime >= UNREACHABLE_AFTER_MS) {
+            this._reachable = false;
+            this.log.warn(this.displayName, 'is unreachable');
+          }
+        })
+        .finally(() => this.pollOptions());
+    }, delay);
   }
 }

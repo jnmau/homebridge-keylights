@@ -1,9 +1,12 @@
-import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic } from 'homebridge';
-import { Bonjour, Service as BonjourService } from 'bonjour-service';
+import { API, DynamicPlatformPlugin, Logger, PlatformAccessory, PlatformConfig, Service, Characteristic, HapStatusError } from 'homebridge';
 
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { KeyLightsAccessory } from './keyLightsAccessory.js';
 import { KeyLight, KeyLightInstance } from './keyLight.js';
+import { KeyLightDiscovery } from './keyLightDiscovery.js';
+
+const REGISTRATION_RETRY_INITIAL_DELAY_MS = 5000;
+const REGISTRATION_RETRY_MAX_DELAY_MS = 60000;
 
 export class KeyLightsPlatform implements DynamicPlatformPlugin {
   public readonly Service: typeof Service;
@@ -13,6 +16,8 @@ export class KeyLightsPlatform implements DynamicPlatformPlugin {
   public readonly accessories: PlatformAccessory[] = [];
   // this is used to track accessory handlers
   public readonly lights: Map<string, KeyLightsAccessory> = new Map();
+  // this is used to track discovered lights that have not been registered yet
+  private readonly pendingLights: Map<string, KeyLight> = new Map();
 
   constructor(
     public readonly log: Logger,
@@ -30,34 +35,7 @@ export class KeyLightsPlatform implements DynamicPlatformPlugin {
     this.api.on('didFinishLaunching', () => {
       this.log.debug('Executed didFinishLaunching callback');
 
-      (new Bonjour()).find({ type: 'elg' }, (remoteService: BonjourService) => {
-        this.log.debug('Discovered accessory:', remoteService.name);
-        
-        const light: KeyLight = {
-          hostname: this.getHostnameForLight(remoteService),
-          port: remoteService.port,
-          name: remoteService.name,
-          mac: remoteService.txt?.id as string ?? '',
-        };
-        if (this.lights.has(light.mac)) {
-          // there already is a platform handler active for this KeyLight, so just update the connection data
-          this.log.debug('Updating connection data for accessory:', remoteService.name);
-          this.lights.get(light.mac)?.updateConnectionData(light);
-        } else {
-          // discovered a new accessory, so a handler must be created
-          this.log.info('Discovered accessory on network:', remoteService.name);
-          KeyLightInstance.createInstance(light, this.log, this.config.pollingRate)
-            .then((instance) => {
-              // run the method to register the light as accessories
-              this.log.debug('Created device instance for', instance.name);
-              this.configureDevice(instance);
-            })
-            .catch((reason) => {
-              this.log.error('Could not register accessory, skipping', remoteService.name);
-              this.log.debug('Reason:', reason);
-            });
-        }
-      });
+      new KeyLightDiscovery(this.log, this.config.useIP, this.onLightDiscovered.bind(this)).start();
     });
   }
 
@@ -68,8 +46,57 @@ export class KeyLightsPlatform implements DynamicPlatformPlugin {
   configureAccessory(accessory: PlatformAccessory) {
     this.log.info('Loading accessory from cache:', accessory.displayName);
 
+    KeyLightsAccessory.reportNotResponding(this, accessory);
+
     // add the restored accessory to the accessories cache so we can track if it has already been registered
     this.accessories.push(accessory);
+  }
+
+  /**
+   * The error reported to HomeKit when a light can not be reached
+   */
+  communicationFailure(): HapStatusError {
+    return new this.api.hap.HapStatusError(this.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+  }
+
+  private onLightDiscovered(light: KeyLight) {
+    if (this.lights.has(light.mac)) {
+      // there already is a platform handler active for this KeyLight, so just update the connection data
+      this.log.debug('Updating connection data for accessory:', light.name);
+      this.lights.get(light.mac)?.updateConnectionData(light);
+    } else if (this.pendingLights.has(light.mac)) {
+      this.pendingLights.set(light.mac, light);
+    } else {
+      // discovered a new accessory, so a handler must be created
+      this.log.info('Discovered accessory on network:', light.name);
+      this.pendingLights.set(light.mac, light);
+      this.registerLight(light.mac);
+    }
+  }
+
+  /**
+   * Registers a pending light, retrying with the latest discovered connection data until the light responds
+   */
+  private registerLight(mac: string, attempt = 0) {
+    const light = this.pendingLights.get(mac)!;
+    KeyLightInstance.createInstance(light, this.log, this.config.pollingRate)
+      .then((instance) => {
+        // run the method to register the light as accessories
+        this.log.debug('Created device instance for', instance.name);
+        this.configureDevice(instance);
+        this.pendingLights.delete(mac);
+      }, (reason) => {
+        if (attempt === 0) {
+          this.log.warn('Could not register accessory, retrying', light.name);
+        }
+        this.log.debug('Reason:', String(reason));
+        const delay = Math.min(REGISTRATION_RETRY_INITIAL_DELAY_MS * 2 ** attempt, REGISTRATION_RETRY_MAX_DELAY_MS);
+        setTimeout(() => this.registerLight(mac, attempt + 1), delay);
+      })
+      .catch((reason) => {
+        this.log.error('Could not configure accessory', light.name);
+        this.log.debug('Reason:', reason);
+      });
   }
 
   /**
@@ -124,19 +151,6 @@ export class KeyLightsPlatform implements DynamicPlatformPlugin {
 
       // link the accessory to your platform
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    }
-  }
-
-  /**
-   * This method fetches the hostname or IP address to use from the found service
-   */
-  private getHostnameForLight(remoteService: BonjourService): string {
-    if (remoteService.addresses !== undefined) {
-      return this.config.useIP 
-        ? remoteService.addresses[0]
-        : remoteService.host;
-    } else {
-      return remoteService.host;
     }
   }
 }
