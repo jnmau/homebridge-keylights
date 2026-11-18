@@ -16,7 +16,7 @@
         "title": "Polling Rate (in milliseconds)",
         "type": "integer",
         "required": false,
-        "placeholder": 1000,
+        "placeholder": 10000,
         "description": "The polling rate for light status in milliseconds"
       },
       "powerOnBehavior": {

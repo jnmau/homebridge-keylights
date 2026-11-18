@@ -33,16 +33,22 @@ export class KeyLightsAccessory {
 
     // register handlers for the On/Off Characteristic
     this.service.getCharacteristic(this.platform.Characteristic.On)
+      .removeOnGet()
+      .removeOnSet()
       .on('set', this.setOn.bind(this))
       .on('get', this.getOn.bind(this));
 
     // register handlers for the Brightness Characteristic
     this.service.getCharacteristic(this.platform.Characteristic.Brightness)
+      .removeOnGet()
+      .removeOnSet()
       .on('set', this.setBrightness.bind(this))
       .on('get', this.getBrightness.bind(this));
 
     // register handlers for the Color Temperature Characteristic and set the valid value range
     this.service.getCharacteristic(this.platform.Characteristic.ColorTemperature)
+      .removeOnGet()
+      .removeOnSet()
       .on('set', this.setColorTemperature.bind(this))
       .on('get', this.getColorTemperature.bind(this))
       .setProps({
@@ -53,6 +59,22 @@ export class KeyLightsAccessory {
     this.accessory.on('identify', (() => {
       this.light.identify();
     }).bind(this));
+  }
+
+  /**
+   * Reports a cached accessory as not responding until a handler is created for it, which replaces these handlers
+   */
+  static reportNotResponding(platform: KeyLightsPlatform, accessory: PlatformAccessory) {
+    const service = accessory.getService(platform.Service.Lightbulb);
+    for (const characteristic of [platform.Characteristic.On, platform.Characteristic.Brightness, platform.Characteristic.ColorTemperature]) {
+      service?.getCharacteristic(characteristic)
+        .onGet(() => {
+          throw platform.communicationFailure();
+        })
+        .onSet(() => {
+          throw platform.communicationFailure();
+        });
+    }
   }
 
   /**
@@ -67,12 +89,12 @@ export class KeyLightsAccessory {
       .catch((reason) => {
         this.platform.log.error('Set Characteristic On ->', value, 'failed on', this.accessory.displayName);
         this.platform.log.debug(reason);
-        callback(Error());
+        callback(this.platform.communicationFailure());
       });
   }
 
   getOn(callback: CharacteristicGetCallback) {
-    callback(null, this.light.options?.lights[0].on);
+    callback(this.reachabilityError(), this.light.options?.lights[0].on);
   }
 
   /**
@@ -87,12 +109,12 @@ export class KeyLightsAccessory {
       .catch((reason) => {
         this.platform.log.error('Set Characteristic Brightness ->', value, 'failed on', this.accessory.displayName);
         this.platform.log.debug(reason);
-        callback(Error());
+        callback(this.platform.communicationFailure());
       });
   }
 
   getBrightness(callback: CharacteristicGetCallback) {
-    callback(null, this.light.getProperty('brightness'));
+    callback(this.reachabilityError(), this.light.getProperty('brightness'));
   }
 
   /**
@@ -107,12 +129,12 @@ export class KeyLightsAccessory {
       .catch((reason) => {
         this.platform.log.error('Set Characteristic Color Temperature ->', value, 'failed on', this.accessory.displayName);
         this.platform.log.debug(reason);
-        callback(Error());
+        callback(this.platform.communicationFailure());
       });
   }
 
   getColorTemperature(callback: CharacteristicGetCallback) {
-    callback(null, this.light.getProperty('temperature'));
+    callback(this.reachabilityError(), this.light.getProperty('temperature'));
   }
 
 
@@ -134,6 +156,10 @@ export class KeyLightsAccessory {
     default:
       break;
     }
+  }
+
+  private reachabilityError() {
+    return this.light.reachable ? null : this.platform.communicationFailure();
   }
 
   /**

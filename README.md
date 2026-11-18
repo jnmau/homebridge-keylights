@@ -9,6 +9,7 @@ This is yet another Homebridge plugin for the Elgato Key Light, Key Light Air an
 
 - Switch your Key Lights on and off, set brightness and colour temperature
 - State of the lights is regularly polled so HomeKit always has the correct data
+- Lights that stop responding for 30 seconds are shown as not responding in HomeKit and reconnect automatically
 - Correct minimum and maximum values configured for colour temperature 
 - All settings configurable via config file, even those not available in the Elgato Control App 
 
@@ -44,7 +45,7 @@ Further settings are available to configure. This is a complete configuration:
     "platforms": [
         {
             "name": "Elgato Key Lights",
-            "pollingRate": 1000,
+            "pollingRate": 10000,
             "powerOnBehavior": 1,
             "powerOnBrightness": 20,
             "powerOnTemperature": 4695,
@@ -58,7 +59,7 @@ Further settings are available to configure. This is a complete configuration:
     }
 
 - `name` is the name of the plugin to appear in the log file. Defaults to `Elgato Key Lights`.
-- `pollingRate` is the rate at which to poll the lights for changes in milliseconds. Defaults to `1000`.
+- `pollingRate` is the rate at which to poll the lights for changes in milliseconds. Lights that are not responding are polled at most once a minute. Defaults to `10000`.
 - `powerOnBehavior` is the behaviour when powering the lights on. Defaults to `1` which means restore the last settings used. `2` means restoring the default values configured below.
 - `powerOnBrightness` is the default brightness value when powering on in percent. Defaults to `20`. Range is `0` to `100`.
 - `powerOnTemperature` is the default colour temperature when powering on in Kelvin. Defaults to `4695`. Range is `2900` to `7000`.

@@ -24,7 +24,7 @@
         },
         {
             "name": "Elgato Key Lights",
-            "pollingRate": 1000,
+            "pollingRate": 10000,
             "powerOnBehavior": 1,
             "powerOnBrightness": 20,
             "powerOnTemperature": 4695,
